@@ -1,35 +1,54 @@
 """
-Post-backup reorganization: move files into YYYY/MM/DD/ folders
-based on iCloud Photos ``added-time`` metadata.
+Date-sorted backup: download directly to YYYY/MM/DD/ folders
+without a staging directory (safe for 2+ TB libraries).
 """
 
+import asyncio
 import json
-import os
-import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from .config import BACKUP_DIR, ICLOUD_SERVICE, RCLONE_REMOTE, RCLONE_SOURCE, log
+from .config import BACKUP_DIR, ICLOUD_SERVICE, RCLONE_REMOTE, RCLONE_SOURCE, MAX_TRANSFER, log
 
-STAGING_DIR = Path(BACKUP_DIR) / ".staging"
+# How many parallel copyto transfers
+PARALLEL_TRANSFERS = 8
 
 
-def reorganize_by_date() -> tuple[int, int]:
+async def _copyto(source: str, dest: str) -> bool:
+    """Copy a single file via rclone copyto. Returns True on success."""
+    proc = await asyncio.create_subprocess_exec(
+        "rclone", "copyto",
+        f"{RCLONE_REMOTE}:{source}",
+        dest,
+        "--iclouddrive-service", ICLOUD_SERVICE,
+        "--ignore-existing",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode == 0:
+        return True
+    stderr_text = stderr.decode(errors="replace")
+    if "max transfer limit reached" in stderr_text:
+        raise MaxTransferReached()
+    log.warning("copyto failed for %s: %s", source, stderr_text[:200])
+    return False
+
+
+class MaxTransferReached(Exception):
+    pass
+
+
+async def backup_by_date() -> tuple[int, int, str]:
     """
-    List all files via rclone lsjson --metadata, then move them
-    from the staging directory into ``YYYY/MM/DD/filename``
-    under BACKUP_DIR.
+    Full date-sorted backup: list files with metadata, then copy
+    new/changed files directly into YYYY/MM/DD/ folders.
 
-    Returns (moved, errors).
+    Returns (files_copied, errors, summary_suffix).
     """
-    if not STAGING_DIR.exists():
-        log.info("No staging directory – nothing to reorganize")
-        return 0, 0
-
-    log.info("Fetching metadata for date-based reorganization...")
-
-    # 1. Get file listing with metadata from rclone
+    # 1. Get file listing with metadata
+    log.info("Fetching file metadata for date-sorted backup...")
     args = [
         "rclone", "lsjson",
         f"{RCLONE_REMOTE}:{RCLONE_SOURCE}",
@@ -40,81 +59,88 @@ def reorganize_by_date() -> tuple[int, int]:
         "--no-mimetype",
     ]
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutError:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+    except asyncio.TimeoutError:
         log.error("rclone lsjson timed out")
-        return 0, 0
+        return 0, 0, ""
     except Exception as e:
         log.error("rclone lsjson failed: %s", e)
-        return 0, 0
+        return 0, 0, ""
 
-    if proc.returncode != 0:
-        log.error("rclone lsjson failed: %s", proc.stderr[:500])
-        return 0, 0
-
-    try:
-        entries = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        log.error("Failed to parse rclone lsjson output")
-        return 0, 0
-
+    entries = json.loads(stdout.decode())
     log.info("Got metadata for %d files", len(entries))
 
-    # 2. Build mapping: staging_path → YYYY/MM/DD/filename
-    moved = 0
-    errors = 0
+    # 2. Build transfer list: (source_path, dest_abs_path)
+    tasks = []
+    skipped = 0
+    transfer_bytes = 0
 
     for entry in entries:
         path = entry.get("Path", "")
+        size = entry.get("Size", 0)
         if not path:
             continue
 
-        staging_file = STAGING_DIR / path
-        if not staging_file.exists():
-            continue  # wasn't downloaded (e.g. --max-transfer limit)
-
-        # Parse added-time
+        # Parse date
         added_raw = entry.get("Metadata", {}).get("added-time", "")
         try:
-            # RFC 3339: "2006-01-02T15:04:05Z" or "2006-01-02T15:04:05+00:00"
             added_raw = added_raw.replace("Z", "+00:00")
             dt = datetime.fromisoformat(added_raw)
         except (ValueError, TypeError):
-            # Fall back to file mtime
-            mtime = staging_file.stat().st_mtime
-            dt = datetime.fromtimestamp(mtime)
+            dt = datetime(2000, 1, 1)  # fallback
 
-        date_dir = f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d}"
-        dest_dir = Path(BACKUP_DIR) / date_dir
-        dest_file = dest_dir / staging_file.name
+        dest_dir = Path(BACKUP_DIR) / f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d}"
+        dest_file = dest_dir / Path(path).name
 
-        # Skip if destination already exists (incremental safety)
-        if dest_file.exists():
-            staging_file.unlink()  # remove staging copy
+        # Skip already existing files (incremental)
+        if dest_file.exists() and dest_file.stat().st_size > 0:
+            skipped += 1
             continue
 
-        try:
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(staging_file), str(dest_file))
-            moved += 1
-        except Exception as e:
-            log.error("Failed to move %s: %s", staging_file, e)
-            errors += 1
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        tasks.append((path, str(dest_file), size))
 
-    # 3. Clean up empty staging directories
-    _remove_empty_dirs(STAGING_DIR)
+    log.info("%d new files to transfer, %d already present", len(tasks), skipped)
 
-    log.info("Reorganization done: %d moved, %d errors", moved, errors)
-    return moved, errors
+    if not tasks:
+        return 0, 0, f" (all {skipped} files up to date)"
 
+    # 3. Parallel download with semaphore
+    sem = asyncio.Semaphore(PARALLEL_TRANSFERS)
+    copied = 0
+    errors = 0
+    total_bytes = 0
+    max_reached = False
 
-def _remove_empty_dirs(root: Path):
-    """Recursively remove empty directories under root."""
-    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
-        if dirpath == str(root):
-            continue
-        try:
-            if not os.listdir(dirpath):
-                os.rmdir(dirpath)
-        except OSError:
-            pass
+    async def transfer_one(source: str, dest: str, size: int):
+        nonlocal copied, errors, total_bytes, max_reached
+        async with sem:
+            if max_reached:
+                return
+            try:
+                ok = await _copyto(source, dest)
+                if ok:
+                    copied += 1
+                    total_bytes += size
+                else:
+                    errors += 1
+            except MaxTransferReached:
+                max_reached = True
+
+    await asyncio.gather(*[transfer_one(s, d, sz) for s, d, sz in tasks])
+
+    # 4. Summary
+    suffix = ""
+    if max_reached:
+        suffix += f" (max-transfer limit reached)"
+    suffix += f"\n📅 Sorted into {copied} files (YYYY/MM/DD)"
+    if skipped:
+        suffix += f"\n📁 {skipped} files already present"
+
+    log.info("Date-sorted backup: %d copied, %d errors, %d skipped", copied, errors, skipped)
+    return copied, errors, suffix

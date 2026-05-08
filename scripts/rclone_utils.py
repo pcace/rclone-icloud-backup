@@ -17,7 +17,7 @@ from .config import (
     SORT_BY_DATE,
     log,
 )
-from .reorganize import reorganize_by_date, STAGING_DIR
+from .reorganize import backup_by_date
 from .state import state
 
 # Guard to prevent concurrent backup runs
@@ -85,11 +85,33 @@ async def _do_run_backup() -> tuple[int, str]:
     """Internal backup implementation."""
     start = datetime.now(timezone.utc)
 
-    # Build rclone args – copy to staging if date-sorted, otherwise direct
-    target_dir = str(STAGING_DIR) if SORT_BY_DATE else BACKUP_DIR
+    # ---- Date-sorted backup (direct to YYYY/MM/DD, no staging) ----
+    if SORT_BY_DATE and not DRY_RUN:
+        log.info("Date-sorted backup of %s -> %s/YYYY/MM/DD", RCLONE_REMOTE, BACKUP_DIR)
+        files_copied, errors, suffix = await backup_by_date()
 
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        elapsed_str = f"{elapsed / 60:.1f} min" if elapsed >= 60 else f"{elapsed:.0f}s"
+
+        summary = (
+            f"📦 <b>Backup complete</b>\n"
+            f"⏱ Duration: {elapsed_str}\n"
+            f"📁 New files: {files_copied}\n"
+            f"❌ Errors: {errors}\n"
+            f"📂 Target: <code>{BACKUP_DIR}</code>"
+            f"{suffix}"
+        )
+        log.info("Backup done: %d files, %d errors, %s", files_copied, errors, elapsed_str)
+
+        state.data["last_backup"] = datetime.now(timezone.utc).isoformat()
+        state.data["last_backup_files"] = files_copied
+        state.data["last_backup_errors"] = errors
+        state.save()
+        return files_copied, summary
+
+    # ---- Flat backup (album structure) ----
     rclone_args = [
-        "copy", f"{RCLONE_REMOTE}:{RCLONE_SOURCE}", target_dir,
+        "copy", f"{RCLONE_REMOTE}:{RCLONE_SOURCE}", BACKUP_DIR,
         "--iclouddrive-service", ICLOUD_SERVICE,
         "--ignore-existing",
         "--progress",
@@ -98,17 +120,15 @@ async def _do_run_backup() -> tuple[int, str]:
         "--verbose",
     ]
 
-    # Test flags
     if DRY_RUN:
         rclone_args.append("--dry-run")
         log.info("DRY_RUN enabled – no files will be transferred")
     if MAX_TRANSFER:
         rclone_args.extend(["--max-transfer", MAX_TRANSFER])
-        log.info("MAX_TRANSFER set to %s", MAX_TRANSFER)
 
     mode_tag = " 🧪 DRY-RUN" if DRY_RUN else ""
     limit_tag = f" (max {MAX_TRANSFER})" if MAX_TRANSFER else ""
-    log.info("Starting backup of %s -> %s%s%s", RCLONE_REMOTE, BACKUP_DIR, mode_tag, limit_tag)
+    log.info("Flat backup of %s -> %s%s%s", RCLONE_REMOTE, BACKUP_DIR, mode_tag, limit_tag)
 
     rc, stdout, stderr = await run_rclone(rclone_args, timeout=7200)
 
@@ -117,21 +137,17 @@ async def _do_run_backup() -> tuple[int, str]:
 
     files_copied = 0
     errors = 0
-    # Parse rclone --stats-one-line output: "... (xfr#2/2079)"
     for line in stderr.splitlines():
         m = re.search(r"xfr#(\d+)", line)
         if m:
             files_copied = max(files_copied, int(m.group(1)))
-    # Count ERROR lines and check final NOTICE for error count
     errors = sum(1 for line in stderr.splitlines() if line.startswith("ERROR"))
     notice_match = re.search(r"Failed to copy with (\d+) errors", stderr)
     if notice_match:
         errors = max(errors, int(notice_match.group(1)))
 
-    dry_tag = " 🧪 DRY-RUN" if DRY_RUN else ""
-    limit_tag = f" (max {MAX_TRANSFER})" if MAX_TRANSFER else ""
     summary = (
-        f"📦 <b>Backup complete</b>{dry_tag}{limit_tag}\n"
+        f"📦 <b>Backup complete</b>{mode_tag}{limit_tag}\n"
         f"⏱ Duration: {elapsed_str}\n"
         f"📁 New files: {files_copied}\n"
         f"❌ Errors: {errors}\n"
@@ -139,14 +155,6 @@ async def _do_run_backup() -> tuple[int, str]:
     )
 
     log.info("Backup done: %d files, %d errors, %s", files_copied, errors, elapsed_str)
-
-    # Reorganize by date if enabled
-    reorg_moved = 0
-    if SORT_BY_DATE and not DRY_RUN:
-        reorg_moved, reorg_errors = reorganize_by_date()
-        errors += reorg_errors
-        if reorg_moved > 0:
-            summary += f"\n📅 Sorted into {reorg_moved} files (YYYY/MM/DD)"
 
     state.data["last_backup"] = datetime.now(timezone.utc).isoformat()
     state.data["last_backup_files"] = files_copied
