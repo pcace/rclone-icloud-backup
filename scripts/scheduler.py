@@ -83,7 +83,7 @@ async def scheduled_backup(context: ContextTypes.DEFAULT_TYPE):
 
     files, summary = await run_backup()
 
-    if chat_id and files >= 0:
+    if chat_id and summary:
         try:
             await context.bot.send_message(
                 chat_id=chat_id, text=summary, parse_mode=ParseMode.HTML

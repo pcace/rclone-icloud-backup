@@ -18,6 +18,9 @@ from .config import (
 )
 from .state import state
 
+# Guard to prevent concurrent backup runs
+_backup_running = False
+
 
 def rclone_config_exists() -> bool:
     """Check if rclone config file exists and contains the remote."""
@@ -63,6 +66,21 @@ async def check_auth() -> tuple[bool, str]:
 
 async def run_backup() -> tuple[int, str]:
     """Run incremental backup. Returns (files_copied, summary)."""
+    global _backup_running
+
+    if _backup_running:
+        log.warning("Backup already running – skipping")
+        return -1, "⏭ <b>Backup uebersprungen</b>\nEin Backup laeuft bereits."
+
+    _backup_running = True
+    try:
+        return await _do_run_backup()
+    finally:
+        _backup_running = False
+
+
+async def _do_run_backup() -> tuple[int, str]:
+    """Internal backup implementation."""
     start = datetime.now(timezone.utc)
 
     # Build rclone args
