@@ -15,6 +15,7 @@ from telegram.ext import Application
 from .config import (
     APPLE_ID,
     APPLE_PASSWORD,
+    APPLE_PASSWORD_OBSCURED,
     RCLONE_CONFIG_FILE,
     RCLONE_REMOTE,
     log,
@@ -67,8 +68,9 @@ def _do_reauth_sync() -> tuple[bool, str]:
         ], timeout=60)
 
         if idx == 0:
+            pwd = APPLE_PASSWORD or APPLE_PASSWORD_OBSCURED
             log.info("Sending password...")
-            child.sendline(APPLE_PASSWORD)
+            child.sendline(pwd)
             idx = child.expect([
                 r"config_2fa",
                 r"2FA|two.factor|code",

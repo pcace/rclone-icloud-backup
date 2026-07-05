@@ -10,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from .config import APPLE_ID, APPLE_PASSWORD, TELEGRAM_CHAT_ID, log
+from .config import APPLE_ID, APPLE_PASSWORD, APPLE_PASSWORD_OBSCURED, TELEGRAM_CHAT_ID, log
 from .rclone_utils import check_auth, run_backup
 from .reauth import feed_2fa_code, poll_for_2fa_prompt, start_reauth_in_thread
 from .scheduler import send_backup_result
@@ -47,7 +47,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/status – Status\n"
         f"/backup – Start backup\n"
         f"/reauth – Re-authenticate\n"
-        f"/logs – Last backup stats"
+        f"/logs – Last backup stats\n"
+        f"/errors – Error details"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -68,6 +69,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 <b>New files:</b> {files}\n"
         f"⚠️ <b>Errors:</b> {errors}\n"
     )
+    if errors:
+        text += "\n💡 <i>Use /errors for details.</i>\n"
     if not auth_ok:
         text += "\n⚠️ <i>Auth expired. Use /reauth to renew.</i>"
 
@@ -93,7 +96,7 @@ async def cmd_reauth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /reauth command."""
     if not _authorized(update):
         return
-    if not APPLE_ID or not APPLE_PASSWORD:
+    if not APPLE_ID or (not APPLE_PASSWORD and not APPLE_PASSWORD_OBSCURED):
         await update.message.reply_text("❌ APPLE_ID or APPLE_PASSWORD not set.")
         return
 
@@ -125,6 +128,42 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📁 New files: {files}\n"
         f"❌ Errors: {errors}\n"
     )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_errors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /errors command – shows categorized error summary + samples."""
+    if not _authorized(update):
+        return
+
+    error_list, summary = state.get_last_errors()
+
+    if not error_list:
+        await update.message.reply_text("✅ No errors recorded in the last backup.")
+        return
+
+    total = state.data.get("last_backup_errors", len(error_list))
+
+    text = f"⚠️ <b>Last backup errors ({total} total)</b>\n\n"
+
+    if summary:
+        text += f"<b>Breakdown:</b>\n{summary}\n\n"
+
+    text += f"<b>Sample errors (first {min(10, len(error_list))}):</b>\n"
+    for i, err in enumerate(error_list[:10]):
+        path_short = err.get("path", "?")
+        if len(path_short) > 60:
+            path_short = "..." + path_short[-57:]
+        err_msg = err.get("error", "?")[:120]
+        text += f"<code>{i+1}. {path_short}</code>\n  → {err_msg}\n"
+
+    if len(error_list) > 10:
+        text += f"\n<i>... and {len(error_list) - 10} more</i>"
+
+    # Telegram has a 4096 char limit – truncate if needed
+    if len(text) > 4000:
+        text = text[:3950] + "\n\n<i>… truncated</i>"
+
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
