@@ -26,8 +26,8 @@ services:
       # Optional: set RCLONE_ARGS in .env to customize, e.g. "--bwlimit 30M --transfers 1"
       - RCLONE_ARGS=${RCLONE_ARGS:-}
     volumes:
-      # Local backup target – change left side to your desired path
-      - /mnt/hugo/Backups/Johannes_FotoBackup:/data/backup
+      # Local backup target – set BACKUP_TARGET in .env
+      - ${BACKUP_TARGET:-./backup}:/data/backup
       # rclone config persistence (stores trust token, cookies, password)
       - ./rclone-config:/root/.config/rclone
       # rclone cache for fast subsequent runs (metadata caching)
