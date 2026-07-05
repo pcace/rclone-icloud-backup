@@ -25,6 +25,7 @@ services:
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       # Optional: set RCLONE_ARGS in .env to customize, e.g. "--bwlimit 30M --transfers 1"
       - RCLONE_ARGS=${RCLONE_ARGS:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       # Local backup target – set BACKUP_TARGET in .env
       - ${BACKUP_TARGET:-./backup}:/data/backup

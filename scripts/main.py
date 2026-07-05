@@ -30,6 +30,7 @@ from .config import (
 )
 from .handlers import (
     cmd_backup,
+    cmd_errors,
     cmd_logs,
     cmd_reauth,
     cmd_start,
@@ -74,6 +75,7 @@ def main():
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("reauth", cmd_reauth))
     app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CommandHandler("errors", cmd_errors))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

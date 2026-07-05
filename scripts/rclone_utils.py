@@ -11,6 +11,7 @@ from .config import (
     DRY_RUN,
     ICLOUD_SERVICE,
     MAX_TRANSFER,
+    RCLONE_ARGS,
     RCLONE_CONFIG_FILE,
     RCLONE_REMOTE,
     RCLONE_SOURCE,
@@ -34,7 +35,9 @@ def rclone_config_exists() -> bool:
 
 async def run_rclone(args: list[str], timeout: int = 300) -> tuple[int, str, str]:
     """Run rclone command and return (returncode, stdout, stderr)."""
-    cmd = ["rclone"] + args
+    # Add extra args from RCLONE_ARGS env variable
+    extra_args = RCLONE_ARGS.split() if RCLONE_ARGS else []
+    cmd = ["rclone"] + args + extra_args
     log.info("Running: %s", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,

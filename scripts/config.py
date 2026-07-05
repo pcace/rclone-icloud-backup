@@ -22,6 +22,7 @@ DRY_RUN = os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes")
 MAX_TRANSFER = os.environ.get("MAX_TRANSFER", "")  # e.g. "500M", "1G"
 INIT_AUTO = os.environ.get("INIT_AUTO", "false").lower() in ("true", "1", "yes")
 SORT_BY_DATE = os.environ.get("SORT_BY_DATE", "true").lower() in ("true", "1", "yes")
+RCLONE_ARGS = os.environ.get("RCLONE_ARGS", "")  # additional rclone args, e.g. "--bwlimit 30M --transfers 1"
 
 # ---- Scheduling ----
 BACKUP_INTERVAL_HOURS = int(os.environ.get("BACKUP_INTERVAL_HOURS", "6"))
@@ -38,9 +39,17 @@ RCLONE_CONFIG_FILE = RCLONE_CONFIG_DIR / "rclone.conf"
 STATE_FILE = Path("/data/backup/.icloud-bkp-state.json")
 
 # ---- Logging ----
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# Silence noisy library loggers (Telegram polling, HTTP requests)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
 log = logging.getLogger("icloud-bkp")
