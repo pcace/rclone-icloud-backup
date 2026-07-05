@@ -23,9 +23,11 @@ services:
       - FIRST_BACKUP_DELAY_MINUTES=${FIRST_BACKUP_DELAY_MINUTES:-5}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      # Optional: set RCLONE_ARGS in .env to customize, e.g. "--bwlimit 30M --transfers 1"
+      - RCLONE_ARGS=${RCLONE_ARGS:-}
     volumes:
       # Local backup target – change left side to your desired path
-      - ./backup:/data/backup
+      - /mnt/hugo/Backups/Johannes_FotoBackup:/data/backup
       # rclone config persistence (stores trust token, cookies, password)
       - ./rclone-config:/root/.config/rclone
       # rclone cache for fast subsequent runs (metadata caching)
