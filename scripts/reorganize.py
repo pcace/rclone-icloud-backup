@@ -6,7 +6,6 @@ without a staging directory (safe for 2+ TB libraries).
 import asyncio
 import json
 import os
-import re
 import shutil
 import tempfile
 from collections import Counter
@@ -233,16 +232,14 @@ async def backup_by_date() -> tuple[int, int, str]:
 
     Returns (files_copied, errors, summary_suffix).
     """
-    # 1. Get file listing with metadata
-    log.info("Fetching file metadata for date-sorted backup...")
+    # 1. Get file listing (ModTime enthält das Aufnahmedatum, kein --metadata nötig)
+    log.info("Fetching file list for date-sorted backup...")
     args = [
         "rclone", "lsjson",
         f"{RCLONE_REMOTE}:{RCLONE_SOURCE}",
         "--iclouddrive-service", ICLOUD_SERVICE,
-        "--metadata",
         "--recursive",
         "--files-only",
-        "--no-mimetype",
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -259,7 +256,7 @@ async def backup_by_date() -> tuple[int, int, str]:
         return 0, 0, ""
 
     entries = json.loads(stdout.decode())
-    log.info("Got metadata for %d files", len(entries))
+    log.info("Got %d files from iCloud", len(entries))
 
     # 2. Build transfer list: (source_path, dest_abs_path)
     #    Also collect Favorites entries for later symlink creation
@@ -286,11 +283,10 @@ async def backup_by_date() -> tuple[int, int, str]:
             })
             continue
 
-        # Parse date
-        added_raw = entry.get("Metadata", {}).get("added-time", "")
+        # Parse date from ModTime (enthält das originale Aufnahmedatum via photo.AssetDate)
+        mod_time = entry.get("ModTime", "")
         try:
-            added_raw = added_raw.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(added_raw)
+            dt = datetime.fromisoformat(mod_time)
         except (ValueError, TypeError):
             dt = datetime(2000, 1, 1)  # fallback
 
