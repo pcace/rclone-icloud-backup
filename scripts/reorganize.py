@@ -258,6 +258,8 @@ async def backup_by_date() -> tuple[int, int, str]:
     entries = json.loads(stdout.decode())
     log.info("Got %d files from iCloud", len(entries))
 
+    backup_start = datetime.now(timezone.utc)
+
     # 2. Build transfer list: (source_path, dest_abs_path)
     #    Also collect Favorites entries for later symlink creation
     tasks = []
@@ -341,6 +343,12 @@ async def backup_by_date() -> tuple[int, int, str]:
                 if ok:
                     copied += 1
                     total_bytes += size
+                    log.info("✅ [%d/%d] %s (%.1f MB)", copied, len(tasks), Path(source).name, size / 1024 / 1024)
+                    if copied % 1000 == 0:
+                        elapsed = (datetime.now(timezone.utc) - backup_start).total_seconds()
+                        rate = copied / elapsed if elapsed > 0 else 0
+                        log.info("📊 Progress: %d/%d files, %.1f GB total, %.1f files/s",
+                                 copied, len(tasks), total_bytes / 1024 / 1024 / 1024, rate)
                 else:
                     errors += 1
                     error_counter[cat] += 1
